@@ -165,13 +165,30 @@ EXTRACT_ROUTER = {
 # 4. 下载、文本转化与正则解析主函数 (完全剥离巨潮，换成东财 CDN)
 # -------------------------------------------------------------------------
 def process_single_pdf(ann_item: dict, event_type: str) -> dict:
-    stock_code = ann_item["codes"][0]["stock_code"]
-    stock_name = ann_item["codes"][0]["short_name"]
-    title = ann_item["title"]
-    notice_date = ann_item["show_time"][:10]  # 提取 YYYY-MM-DD
-    art_code = ann_item["art_code"]
+    # 1. 采用防崩兜底机制提取股票代码与名称
+    codes = ann_item.get("codes", [])
+    if codes and isinstance(codes, list):
+        stock_code = codes[0].get("stock_code", "")
+        stock_name = codes[0].get("short_name", "")
+    else:
+        stock_code = ""
+        stock_name = ""
+        
+    title = ann_item.get("title", "")
+    art_code = ann_item.get("art_code", "")
     
-    # 根据东财的黄金加速规则确定前缀
+    # 2. 【核心修复】：兼容 notice_date 与 show_time 两个时间参数
+    raw_date = ann_item.get("notice_date") or ann_item.get("show_time") or ""
+    notice_date = raw_date[:10] if len(raw_date) >= 10 else "2021-01-01"
+    
+    # 如果股票代码为空，直接判定为无效数据，安全跳过，防止拼接 URL 报错
+    if not stock_code or not art_code:
+        return {
+            "code": stock_code, "name": stock_name, "date": notice_date,
+            "title": title, "event_type": event_type, "val_1": 0.0, "val_2": 0.0, "val_3": 0.0
+        }
+
+    # 3. 动态确定东财静态加速前缀
     if stock_code.startswith("6"):
         prefix = "H3"
     elif stock_code.startswith("8") or stock_code.startswith("4"):
@@ -183,12 +200,12 @@ def process_single_pdf(ann_item: dict, event_type: str) -> dict:
     
     val_1, val_2, val_3 = 0.0, 0.0, 0.0
     try:
-        # 从东财公开镜像中极速拉取，无任何 WAF 拦截
+        # 极速拉取并解码 PDF
         resp = requests.get(pdf_url, headers=HEADERS, timeout=15)
         if resp.status_code == 200:
             doc = fitz.open(stream=resp.content, filetype="pdf")
             extracted_text = ""
-            pages_to_read = min(3, len(doc))  # 强制只读前 3 页
+            pages_to_read = min(3, len(doc))  # 限制最多解析前 3 页
             for i in range(pages_to_read):
                 extracted_text += doc[i].get_text()
             doc.close()

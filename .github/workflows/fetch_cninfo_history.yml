@@ -35,8 +35,8 @@ jobs:
         python scripts/fetch_cninfo_events.py --year ${{ matrix.year }}
 
     - name: 🗄️ 归档并持久化本年度事件因子 Parquet
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4  # 👈 升级为官方推荐的 v4 版本
       with:
         name: cninfo-event-alpha-${{ matrix.year }}
         path: output_events/event_${{ matrix.year }}.parquet
-        retention-days: 14 # 产物在 actions 页面保留 14 天供随时下载或在 Reduce 阶段合并
+        retention-days: 14

@@ -24,18 +24,19 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
+# ⭐️ 优化后的吸附关键字矩阵
 EVENT_CONFIG = {
-    "YJYG": {"name": "业绩预告", "f_node": "1", "keywords": ["预告", "快报", "业绩", "利润"]},
-    "ZJC":  {"name": "增减持", "f_node": "2", "keywords": ["减持", "增持", "股份变动"]},
-    "HG":   {"name": "股份回购", "f_node": "3", "keywords": ["回购"]},
-    "GQJL": {"name": "股权激励", "f_node": "4", "keywords": ["激励", "限制性股票", "期权"]},
-    "JJ":   {"name": "限售股解禁", "f_node": "5", "keywords": ["解除限售", "解禁", "上市流通"]},
-    "FHSZ": {"name": "分红送转", "f_node": "6", "keywords": ["分红", "派息", "分配", "送转", "权益分派"]},
-    "DXZF": {"name": "定向增发", "f_node": "7", "keywords": ["定增", "非公开", "特定对象", "发行股票"]}
+    "YJYG": {"name": "业绩预告", "f_node": "1", "keywords": ["预告", "快报", "业绩大幅", "利润预增", "扭亏"]},
+    "ZJC":  {"name": "增减持", "f_node": "2", "keywords": ["减持", "增持", "大股东变动", "持股变动"]}, # 剔除"股份变动"噪音
+    "HG":   {"name": "股份回购", "f_node": "3", "keywords": ["回购股份", "回购方案", "回购报告书", "实施回购"]},
+    "GQJL": {"name": "股权激励", "f_node": "4", "keywords": ["激励计划", "股权激励", "限制性股票", "股票期权", "授予"]},
+    "JJ":   {"name": "限售股解禁", "f_node": "5", "keywords": ["解除限售", "限售股上市", "解禁"]},
+    "FHSZ": {"name": "分红送转", "f_node": "6", "keywords": ["分红", "派息", "利润分配", "分配方案", "分配预案", "送转", "权益分派"]}, # 补齐"利润分配"
+    "DXZF": {"name": "定向增发", "f_node": "7", "keywords": ["定向增发", "定增", "非公开发行", "特定对象发行"]}
 }
 
 # -------------------------------------------------------------------------
-# 2. 宽容型数值转化函数
+# 2. 数值转化函数
 # -------------------------------------------------------------------------
 def parse_to_wan_yuan(num: float, unit_str: str) -> float:
     if "亿" in unit_str:
@@ -45,21 +46,18 @@ def parse_to_wan_yuan(num: float, unit_str: str) -> float:
     return num / 10000.0
 
 # -------------------------------------------------------------------------
-# 3. 极强吸附力：模糊宽容正则提取器 (Fuzzy Regexes)
+# 3. 模糊宽容正则提取器
 # -------------------------------------------------------------------------
 def extract_yjyg(text: str) -> tuple:
     v1, v2, v3 = 0.0, 0.0, 0.0
-    # 模糊抓取变动百分比 (如 50%至100%)
     pct_match = re.search(r"(?:增|上升|增加).*?([0-9\.]+)%.*?(?:至|-|~|到).*?([0-9\.]+)%", text)
     if pct_match:
         v1, v2 = float(pct_match.group(1)), float(pct_match.group(2))
     else:
-        # 处理下降逻辑
         pct_match_down = re.search(r"(?:降|下降|减少).*?([0-9\.]+)%.*?(?:至|-|~|到).*?([0-9\.]+)%", text)
         if pct_match_down:
             v1, v2 = -float(pct_match_down.group(1)), -float(pct_match_down.group(2))
 
-    # 模糊抓取净利润绝对值
     profit_match = re.search(r"(?:盈利|净利润).*?([0-9\.]+)(万元|亿元).*?(?:至|-|~|到).*?([0-9\.]+)(万元|亿元)", text)
     if profit_match:
         v3 = parse_to_wan_yuan(float(profit_match.group(1)), profit_match.group(2))
@@ -68,7 +66,6 @@ def extract_yjyg(text: str) -> tuple:
 def extract_zjc(text: str) -> tuple:
     v1, v2 = 0.0, 0.0
     direction = -1.0 if "减持" in text else 1.0
-    # 只要在减持周围出现 % 就抓取
     ratio_match = re.search(r"(?:减持|增持).*?([0-9\.]+)%", text)
     if ratio_match:
         v1 = float(ratio_match.group(1)) * direction
@@ -146,7 +143,7 @@ EXTRACT_ROUTER = {
 }
 
 # -------------------------------------------------------------------------
-# 4. 下载、文本转化与正则解析主函数 (双轨防崩机制)
+# 4. 下载、文本转化与正则解析主函数 (1KB 长度卫检)
 # -------------------------------------------------------------------------
 def process_single_pdf(ann_item: dict, event_type: str) -> dict:
     codes = ann_item.get("codes", [])
@@ -167,24 +164,23 @@ def process_single_pdf(ann_item: dict, event_type: str) -> dict:
 
     prefix = "H3" if stock_code.startswith("6") else ("H1" if stock_code.startswith("8") or stock_code.startswith("4") else "H2")
     
-    # ⭐️ 核心改进 1：双轨 CDN URL，防止 404
     pdf_url_1 = f"https://pdf.dfcfw.com/pdf/{prefix}_{art_code}_1.pdf"
     pdf_url_2 = f"https://pdf.dfcfw.com/pdf/{prefix}_{art_code}.pdf"
     
     val_1, val_2, val_3 = 0.0, 0.0, 0.0
     try:
         resp = requests.get(pdf_url_1, headers=HEADERS, timeout=15)
-        if resp.status_code != 200:
-            resp = requests.get(pdf_url_2, headers=HEADERS, timeout=15) # 自动降级尝试
+        # ⭐️ 核心改进：不仅看状态码 200，还要通过“文件长度 > 1000 字节”拦截 CDN 空响应
+        if resp.status_code != 200 or len(resp.content) < 1000:
+            resp = requests.get(pdf_url_2, headers=HEADERS, timeout=15)
             
-        if resp.status_code == 200:
+        if resp.status_code == 200 and len(resp.content) >= 1000:
             doc = fitz.open(stream=resp.content, filetype="pdf")
             extracted_text = ""
             for i in range(min(3, len(doc))):
                 extracted_text += doc[i].get_text()
             doc.close()
 
-            # ⭐️ 核心改进 2：彻底物理消灭逗号、空格、人民币等废话，将干扰降到 0
             flat_text = re.sub(r'[\s,，、人民币]', '', extracted_text)
             
             parser = EXTRACT_ROUTER.get(event_type)
@@ -192,9 +188,10 @@ def process_single_pdf(ann_item: dict, event_type: str) -> dict:
                 res = parser(flat_text)
                 val_1, val_2, val_3 = res[0], res[1], (res[2] if len(res) > 2 else 0.0)
         else:
-            logger.warning(f"下载失败 404: {stock_code} {title}")
+            # 优雅降级记录，不再触发 fitz 的 stream 空白解析报错
+            logger.debug(f"CDN 未提供有效 PDF: {stock_code} {title}")
     except Exception as e:
-        logger.warning(f"解析异常 {stock_code} {title}: {str(e)}") # 改为 warning 暴露问题
+        logger.warning(f"解析异常 {stock_code} {title}: {str(e)}")
 
     return {
         "code": stock_code, "name": stock_name, "date": notice_date,
@@ -203,7 +200,7 @@ def process_single_pdf(ann_item: dict, event_type: str) -> dict:
     }
 
 # -------------------------------------------------------------------------
-# 5. 东财接口查询 (扩大深度)
+# 5. 东财接口查询
 # -------------------------------------------------------------------------
 def fetch_announcements_by_year(year: int, event_type: str) -> list:
     results = []

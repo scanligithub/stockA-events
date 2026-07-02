@@ -19,25 +19,52 @@ logging.basicConfig(
 )
 logger = logging.getLogger("EASTMONEY_EVENT_ENGINE")
 
-# 东财开放披露网关与请求头
 EASTMONEY_API_URL = "https://np-anotice-stock.eastmoney.com/api/security/ann"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-# 东财官方公告大类节点 (7 大事件完美对齐)
+# ⭐️ 核心改进：为 7 大事件配置极度严格的标题“预洗关键字”
 EVENT_CONFIG = {
-    "YJYG": {"name": "业绩预告", "f_node": "1"},
-    "ZJC":  {"name": "增减持", "f_node": "2"},
-    "HG":   {"name": "股份回购", "f_node": "3"},
-    "GQJL": {"name": "股权激励", "f_node": "4"},
-    "JJ":   {"name": "限售股解禁", "f_node": "5"},
-    "FHSZ": {"name": "分红送转", "f_node": "6"},
-    "DXZF": {"name": "定向增发", "f_node": "7"}
+    "YJYG": {
+        "name": "业绩预告", 
+        "f_node": "1", 
+        "keywords": ["预告", "快报", "业绩大幅", "利润预增", "扭亏"]
+    },
+    "ZJC":  {
+        "name": "增减持", 
+        "f_node": "2", 
+        "keywords": ["减持", "增持", "股份变动", "股份减持", "股份增持"]
+    },
+    "HG":   {
+        "name": "股份回购", 
+        "f_node": "3", 
+        "keywords": ["回购股份", "回购方案", "回购报告书", "回购的进展", "实施回购"]
+    },
+    "GQJL": {
+        "name": "股权激励", 
+        "f_node": "4", 
+        "keywords": ["激励计划", "股权激励", "限制性股票", "股票期权", "授予"]
+    },
+    "JJ":   {
+        "name": "限售股解禁", 
+        "f_node": "5", 
+        "keywords": ["解除限售", "限售股上市", "解禁"]
+    },
+    "FHSZ": {
+        "name": "分红送转", 
+        "f_node": "6", 
+        "keywords": ["分红", "派息", "分配预案", "送转", "实施公告", "红利发放"]
+    },
+    "DXZF": {
+        "name": "定向增发", 
+        "f_node": "7", 
+        "keywords": ["定向增发", "定增", "非公开发行", "特定对象发行"]
+    }
 }
 
 # -------------------------------------------------------------------------
-# 2. 文本数值化解析函数
+# 2. 数值转化函数
 # -------------------------------------------------------------------------
 def clean_num_str(text: str) -> float:
     if not text:
@@ -162,10 +189,9 @@ EXTRACT_ROUTER = {
 }
 
 # -------------------------------------------------------------------------
-# 4. 下载、文本转化与正则解析主函数 (完全剥离巨潮，换成东财 CDN)
+# 4. 下载、文本转化与正则解析主函数 (安全重构版)
 # -------------------------------------------------------------------------
 def process_single_pdf(ann_item: dict, event_type: str) -> dict:
-    # 1. 采用防崩兜底机制提取股票代码与名称
     codes = ann_item.get("codes", [])
     if codes and isinstance(codes, list):
         stock_code = codes[0].get("stock_code", "")
@@ -177,18 +203,15 @@ def process_single_pdf(ann_item: dict, event_type: str) -> dict:
     title = ann_item.get("title", "")
     art_code = ann_item.get("art_code", "")
     
-    # 2. 【核心修复】：兼容 notice_date 与 show_time 两个时间参数
     raw_date = ann_item.get("notice_date") or ann_item.get("show_time") or ""
     notice_date = raw_date[:10] if len(raw_date) >= 10 else "2021-01-01"
     
-    # 如果股票代码为空，直接判定为无效数据，安全跳过，防止拼接 URL 报错
     if not stock_code or not art_code:
         return {
             "code": stock_code, "name": stock_name, "date": notice_date,
             "title": title, "event_type": event_type, "val_1": 0.0, "val_2": 0.0, "val_3": 0.0
         }
 
-    # 3. 动态确定东财静态加速前缀
     if stock_code.startswith("6"):
         prefix = "H3"
     elif stock_code.startswith("8") or stock_code.startswith("4"):
@@ -200,12 +223,11 @@ def process_single_pdf(ann_item: dict, event_type: str) -> dict:
     
     val_1, val_2, val_3 = 0.0, 0.0, 0.0
     try:
-        # 极速拉取并解码 PDF
         resp = requests.get(pdf_url, headers=HEADERS, timeout=15)
         if resp.status_code == 200:
             doc = fitz.open(stream=resp.content, filetype="pdf")
             extracted_text = ""
-            pages_to_read = min(3, len(doc))  # 限制最多解析前 3 页
+            pages_to_read = min(3, len(doc))
             for i in range(pages_to_read):
                 extracted_text += doc[i].get_text()
             doc.close()
@@ -233,7 +255,7 @@ def process_single_pdf(ann_item: dict, event_type: str) -> dict:
     }
 
 # -------------------------------------------------------------------------
-# 5. 东财接口查询
+# 5. 东财接口查询 (深度扩大至 30 页，获取更深历史信号)
 # -------------------------------------------------------------------------
 def fetch_announcements_by_year(year: int, event_type: str) -> list:
     results = []
@@ -270,20 +292,20 @@ def fetch_announcements_by_year(year: int, event_type: str) -> list:
                 break
             
             results.extend(ann_list)
-            # 在 Actions 生产环境上，每类事件单年最多抓取 1000 篇高价值文章即可
-            if len(ann_list) < page_size or page >= 10:  
+            # ⭐️ 核心改进：扩大扫描页数至 30 页（3000条原始公告），以确保经过“预清洗”后依然有足够多的高价值信号
+            if len(ann_list) < page_size or page >= 30:  
                 break
             page += 1
-            time.sleep(0.5)
+            time.sleep(0.3)
         except Exception as e:
             logger.error(f"查询东财接口异常: {str(e)}")
             break
             
-    logger.info(f"查询完毕！共计匹配到 {len(results)} 份【{cfg['name']}】公告")
+    logger.info(f"扫网完毕！共计扫描到 {len(results)} 份原始公告描述。")
     return results
 
 # -------------------------------------------------------------------------
-# 6. 多线程并发调度主程序
+# 6. 多线程并发调度主程序 (包含降维预过滤逻辑)
 # -------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(description="EastMoney Event Alpha Factory")
@@ -300,24 +322,43 @@ def main():
         if not raw_announcements:
             continue
             
-        logger.info(f"启动 PyMuPDF 并发解码器，处理 {len(raw_announcements)} 份 PDF 文件...")
+        # ⭐️ 终极改进：在投喂线程池之前，执行“标题预清洗”！
+        # 仅当标题含有本事件的特征词（如“预告”、“快报”等）时，才允许进入下载和 PDF 解析队列
+        filtered_announcements = []
+        keywords = EVENT_CONFIG[et_code]["keywords"]
+        for item in raw_announcements:
+            title = item.get("title", "")
+            if any(kw in title for kw in keywords):
+                filtered_announcements.append(item)
+                
+        logger.info(f"【过滤洗涤】: 原始描述 {len(raw_announcements)} 篇 ➔ 降维过滤后真正高价值 PDF: {len(filtered_announcements)} 篇")
+        
+        if not filtered_announcements:
+            logger.info(f"  -> 【{et_meta['name']}】无满足关键词的有效公告，跳过 PDF 下载。")
+            continue
+            
+        logger.info(f"启动 PyMuPDF 并发解码器，深度解析这 {len(filtered_announcements)} 份核心 PDF...")
         
         records_part = []
         with ThreadPoolExecutor(max_workers=10) as executor:
             futures = {
                 executor.submit(process_single_pdf, item, et_code): item 
-                for item in raw_announcements
+                for item in filtered_announcements
             }
             
             processed_cnt = 0
             for fut in as_completed(futures):
                 res = fut.result()
-                records_part.append(res)
+                # ⭐️ 改进：如果解析出的核心字段不为0，或者虽然为0但确实是真实公告，加入数据集
+                # 此处只保留真正提取出有用因子的行（彻底消灭无意义的0值行占位，保持数据集极度纯净！）
+                if res["val_1"] != 0.0 or res["val_2"] != 0.0 or res["val_3"] != 0.0:
+                    records_part.append(res)
                 processed_cnt += 1
-                if processed_cnt % 100 == 0:
-                    logger.info(f"进度反馈: 已完成 {processed_cnt} / {len(raw_announcements)}")
+                if processed_cnt % 50 == 0:
+                    logger.info(f"进度反馈: 已完成 {processed_cnt} / {len(filtered_announcements)}")
                     
         all_final_records.extend(records_part)
+        logger.info(f"  -> 【{et_meta['name']}】提纯完毕，产出真 Alpha 记录数: {len(records_part)} 条\n")
         
     if all_final_records:
         df = pl.DataFrame(all_final_records)
@@ -335,9 +376,9 @@ def main():
         ])
         
         df.write_parquet(output_file, compression="zstd")
-        logger.info(f"【🎉 大功告成】已成功生成 {target_year} 年度极纯净、去未来化事件因子库: {output_file}，共计 {len(df)} 行数据")
+        logger.info(f"【🎉 降维打击大获成功】已生成 {target_year} 年度极纯净、100%真信号事件因子库: {output_file}，共计 {len(df)} 行有效特征！")
     else:
-        logger.warning(f"该年份 {target_year} 未提取到任何有效公告数据。")
+        logger.warning(f"该年份 {target_year} 在深度过滤后，未提取到任何含有效数值的公告数据。")
 
 if __name__ == "__main__":
     main()

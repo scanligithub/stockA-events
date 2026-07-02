@@ -263,32 +263,34 @@ def process_single_pdf(ann_item: dict, event_type: str) -> dict:
 # -------------------------------------------------------------------------
 def fetch_announcements_by_year(year: int, event_type: str) -> list:
     """
-    通过巨潮网关全量扫描某一年度某类事件下的所有匹配公告
+    通过巨潮网关全量扫描某一年度某类事件下的所有匹配公告 (已修正参数对齐)
     """
     results = []
     page = 1
     page_size = 100 # 单次拉取最大上限，减少 HTTP 请求
     cfg = EVENT_CONFIG[event_type]
     
+    # 修正：巨潮标准的日期区间格式为 "YYYY-MM-DD ~ YYYY-MM-DD"
     start_date = f"{year}-01-01"
     end_date = f"{year}-12-31"
+    se_date_str = f"{start_date} ~ {end_date}"
     
     logger.info(f"开始查询 {year} 年【{cfg['name']}】公告列表...")
     
     while True:
-        # 巨潮参数构造
+        # 修正后的巨潮参数构造
         payload = {
             "pageNum": page,
             "pageSize": page_size,
             "tabName": "fulltext",
-            "column": "szse_main;sse_main;kcb;cyb", # 全市场覆盖
+            "column": "",               # 修正：设为空字符串，巨潮网关会自动检索全市场（沪深京）
             "plate": "",
             "stock": "",
-            "searchkey": cfg["keywords"][0], # 核心主关键词路由
+            "searchkey": "",            # 修正：设为空。有了 category 强分类，无需 searchkey，避免 AND 冲突
             "secid": "",
             "category": cfg["category"],
             "trade": "",
-            "showTime": f"{start_date} ~ {end_date}",
+            "seDate": se_date_str,      # 修正：将 showTime 改为官方标准的 seDate 字段
             "sortName": "pubtime",
             "sortType": "desc"
         }
@@ -296,7 +298,9 @@ def fetch_announcements_by_year(year: int, event_type: str) -> list:
         try:
             resp = requests.post(CNINFO_QUERY_URL, headers=HEADERS, data=payload, timeout=15)
             if resp.status_code != 200:
+                logger.error(f"网关响应异常，状态码: {resp.status_code}")
                 break
+                
             data = resp.json()
             announcements = data.get("announcements", [])
             if not announcements:
@@ -304,10 +308,10 @@ def fetch_announcements_by_year(year: int, event_type: str) -> list:
             
             results.extend(announcements)
             # 判断是否已拉取完毕
-            if len(announcements) < page_size or page >= 10:  # 生产环境安全拦截或控制抓取规模
+            if len(announcements) < page_size or page >= 15:  # 单次控制抓取页数，保护目标节点
                 break
             page += 1
-            time.sleep(1) # 礼貌延迟，保护目标 CDN
+            time.sleep(1) # 礼貌延迟
         except Exception as e:
             logger.error(f"查询巨潮接口异常: {str(e)}")
             break

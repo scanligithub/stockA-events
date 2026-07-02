@@ -1,0 +1,42 @@
+name: 📥 CNINFO Event Alpha Factory (History Backfill)
+
+on:
+  workflow_dispatch: # 支持在 GitHub Web UI 随时手动触发运行
+  schedule:
+    - cron: '0 11 * * 1-5' # 周一至周五，下午 19:00 (UTC+8) 自动进行日历增量维护更新
+
+jobs:
+  build-and-crawl:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 矩阵配置：并行在 4 台隔离虚拟机上同时提取 4 年的历史，完美绕过 6 小时超时红线！
+        year: [2021, 2022, 2023, 2024]
+
+    steps:
+    - name: 🔍 检查本库代码
+      uses: actions/checkout@v3
+
+    - name: 🐍 配置 Python 环境
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        cache: 'pip' # 自动开启依赖层缓存
+
+    - name: 📦 安装高性能底层依赖
+      run: |
+        pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: ⚙️ 启动分布式矩阵计算 (C 加速引擎)
+      run: |
+        # 传入矩阵年份参数，单台虚拟机仅计算对应一年的公告数据
+        python scripts/fetch_cninfo_events.py --year ${{ matrix.year }}
+
+    - name: 🗄️ 归档并持久化本年度事件因子 Parquet
+      uses: actions/upload-artifact@v3
+      with:
+        name: cninfo-event-alpha-${{ matrix.year }}
+        path: output_events/event_${{ matrix.year }}.parquet
+        retention-days: 14 # 产物在 actions 页面保留 14 天供随时下载或在 Reduce 阶段合并
